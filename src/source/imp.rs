@@ -3,15 +3,14 @@ use gst::glib;
 use gst::prelude::*;
 use gst::subclass::prelude::*;
 
-use moq_karp::moq_transfork;
+use hang::moq_lite;
 
-use moq_native::{quic, tls};
 use once_cell::sync::Lazy;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 
 static CAT: Lazy<gst::DebugCategory> =
-	Lazy::new(|| gst::DebugCategory::new("moqsrc", gst::DebugColorFlags::empty(), Some("MoQ Source Element")));
+	Lazy::new(|| gst::DebugCategory::new("hang-src", gst::DebugColorFlags::empty(), Some("Hang Source Element")));
 
 pub static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
 	tokio::runtime::Builder::new_multi_thread()
@@ -23,19 +22,20 @@ pub static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
 
 #[derive(Default, Clone)]
 struct Settings {
-	pub url: String,
+	pub url: Option<String>,
+	pub broadcast: Option<String>,
 	pub tls_disable_verify: bool,
 }
 
 #[derive(Default)]
-pub struct MoqSrc {
+pub struct HangSrc {
 	settings: Mutex<Settings>,
 }
 
 #[glib::object_subclass]
-impl ObjectSubclass for MoqSrc {
-	const NAME: &'static str = "MoqSrc";
-	type Type = super::MoqSrc;
+impl ObjectSubclass for HangSrc {
+	const NAME: &'static str = "HangSrc";
+	type Type = super::HangSrc;
 	type ParentType = gst::Bin;
 
 	fn new() -> Self {
@@ -43,16 +43,20 @@ impl ObjectSubclass for MoqSrc {
 	}
 }
 
-impl GstObjectImpl for MoqSrc {}
-impl BinImpl for MoqSrc {}
+impl GstObjectImpl for HangSrc {}
+impl BinImpl for HangSrc {}
 
-impl ObjectImpl for MoqSrc {
+impl ObjectImpl for HangSrc {
 	fn properties() -> &'static [glib::ParamSpec] {
 		static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
 			vec![
 				glib::ParamSpecString::builder("url")
 					.nick("Source URL")
 					.blurb("Connect to the given URL")
+					.build(),
+				glib::ParamSpecString::builder("broadcast")
+					.nick("Broadcast")
+					.blurb("The name of the broadcast to consume")
 					.build(),
 				glib::ParamSpecBoolean::builder("tls-disable-verify")
 					.nick("TLS disable verify")
@@ -69,6 +73,7 @@ impl ObjectImpl for MoqSrc {
 
 		match pspec.name() {
 			"url" => settings.url = value.get().unwrap(),
+			"broadcast" => settings.broadcast = value.get().unwrap(),
 			"tls-disable-verify" => settings.tls_disable_verify = value.get().unwrap(),
 			_ => unimplemented!(),
 		}
@@ -79,13 +84,14 @@ impl ObjectImpl for MoqSrc {
 
 		match pspec.name() {
 			"url" => settings.url.to_value(),
+			"broadcast" => settings.broadcast.to_value(),
 			"tls-disable-verify" => settings.tls_disable_verify.to_value(),
 			_ => unimplemented!(),
 		}
 	}
 }
 
-impl ElementImpl for MoqSrc {
+impl ElementImpl for HangSrc {
 	fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
 		static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
 			gst::subclass::ElementMetadata::new(
@@ -130,6 +136,11 @@ impl ElementImpl for MoqSrc {
 					gst::error!(CAT, obj = self.obj(), "Failed to setup: {:?}", e);
 					return Err(gst::StateChangeError);
 				}
+				// Chain up first to let the bin handle the state change
+				let result = self.parent_change_state(transition);
+				result?;
+				// This is a live source - no preroll needed
+				return Ok(gst::StateChangeSuccess::NoPreroll);
 			}
 
 			gst::StateChange::PausedToReady => {
@@ -140,53 +151,57 @@ impl ElementImpl for MoqSrc {
 			_ => (),
 		}
 
-		// Chain up
+		// Chain up for other transitions
 		self.parent_change_state(transition)
 	}
 }
 
-impl MoqSrc {
+impl HangSrc {
 	async fn setup(&self) -> anyhow::Result<()> {
-		let (quic, url, path) = {
+		let (client, url, name) = {
 			let settings = self.settings.lock().unwrap();
-			let url = url::Url::parse(&settings.url)?;
-			let path = url.path().strip_prefix("/").unwrap().to_string();
+			let url = url::Url::parse(settings.url.as_ref().expect("url is required"))?;
+			let name = settings.broadcast.as_ref().expect("broadcast is required").clone();
 
 			// TODO support TLS certs and other options
-			let quic = quic::Args {
-				bind: "[::]:0".parse().unwrap(),
-				tls: tls::Args {
-					disable_verify: settings.tls_disable_verify,
+			let client = moq_native::ClientConfig {
+				tls: moq_native::ClientTls {
+					disable_verify: Some(settings.tls_disable_verify),
 					..Default::default()
 				},
-			};
+				..Default::default()
+			}
+			.init()?;
 
-			(quic, url, path)
+			(client, url, name)
 		};
 
-		let quic = quic.load()?;
-		let client = quic::Endpoint::new(quic)?.client;
-
 		let session = client.connect(url).await?;
-		let session = moq_transfork::Session::connect(session).await?;
-		let mut broadcast = moq_karp::BroadcastConsumer::new(session, path);
+		let origin = moq_lite::Origin::produce();
+		let _session = moq_lite::Session::connect(session, None, origin.producer).await?;
+
+		let broadcast = origin
+			.consumer
+			.consume_broadcast(&name)
+			.ok_or_else(|| anyhow::anyhow!("Broadcast '{}' not found", name))?;
+
+		let catalog = broadcast.subscribe_track(&hang::Catalog::default_track());
+		let mut catalog = hang::catalog::CatalogConsumer::new(catalog);
 
 		// TODO handle catalog updates
-		let catalog = broadcast.next_catalog().await?.context("no catalog found")?.clone();
-
-		gst::info!(CAT, "catalog: {:?}", catalog);
+		let catalog = catalog.next().await?.context("no catalog found")?.clone();
 
 		for video in catalog.video {
-			let mut track = broadcast.track(&video.track)?;
+			let mut track: hang::TrackConsumer = broadcast.subscribe_track(&video.track).into();
 
-			let caps = match video.codec {
-				moq_karp::VideoCodec::H264(_) => {
+			let caps = match video.config.codec {
+				hang::catalog::VideoCodec::H264(_) => {
 					let builder = gst::Caps::builder("video/x-h264")
 						//.field("width", video.resolution.width)
 						//.field("height", video.resolution.height)
 						.field("alignment", "au");
 
-					if let Some(description) = video.description {
+					if let Some(description) = video.config.description {
 						builder
 							.field("stream-format", "avc")
 							.field("codec_data", gst::Buffer::from_slice(description.clone()))
@@ -255,7 +270,94 @@ impl MoqSrc {
 			});
 		}
 
-		for audio in catalog.audio {}
+		for audio in catalog.audio {
+			let mut track: hang::TrackConsumer = broadcast.subscribe_track(&audio.track).into();
+
+			let caps = match &audio.config.codec {
+				hang::catalog::AudioCodec::AAC(_aac) => {
+					let builder = gst::Caps::builder("audio/mpeg")
+						.field("mpegversion", 4)
+						.field("channels", audio.config.channel_count)
+						.field("rate", audio.config.sample_rate);
+
+					if let Some(description) = audio.config.description {
+						builder
+							.field("codec_data", gst::Buffer::from_slice(description.clone()))
+							.field("stream-format", "aac")
+							.build()
+					} else {
+						builder.field("stream-format", "adts").build()
+					}
+				}
+				hang::catalog::AudioCodec::Opus => {
+					let builder = gst::Caps::builder("audio/x-opus")
+						.field("rate", audio.config.sample_rate)
+						.field("channels", audio.config.channel_count);
+
+					if let Some(description) = audio.config.description {
+						builder
+							.field("codec_data", gst::Buffer::from_slice(description.clone()))
+							.field("stream-format", "ogg")
+							.build()
+					} else {
+						builder.field("stream-format", "opus").build()
+					}
+				}
+				_ => unimplemented!(),
+			};
+
+			gst::info!(CAT, "caps: {:?}", caps);
+
+			let templ = self.obj().element_class().pad_template("audio_%u").unwrap();
+
+			let srcpad = gst::Pad::builder_from_template(&templ).name(&audio.track.name).build();
+			srcpad.set_active(true).unwrap();
+
+			let stream_start = gst::event::StreamStart::builder(&audio.track.name)
+				.group_id(gst::GroupId::next())
+				.build();
+			srcpad.push_event(stream_start);
+
+			let caps_evt = gst::event::Caps::new(&caps);
+			srcpad.push_event(caps_evt);
+
+			let segment = gst::event::Segment::new(&gst::FormattedSegment::<gst::ClockTime>::new());
+			srcpad.push_event(segment);
+
+			self.obj().add_pad(&srcpad).expect("Failed to add pad");
+
+			let mut reference = None;
+
+			// Push to the srcpad in a background task.
+			tokio::spawn(async move {
+				// TODO don't panic on error
+				while let Some(frame) = track.read().await.expect("failed to read frame") {
+					let mut buffer = gst::Buffer::from_slice(frame.payload);
+					let buffer_mut = buffer.get_mut().unwrap();
+
+					// Make the timestamps relative to the first frame
+					let timestamp = if let Some(reference) = reference {
+						frame.timestamp - reference
+					} else {
+						reference = Some(frame.timestamp);
+						frame.timestamp
+					};
+
+					let pts = gst::ClockTime::from_nseconds(timestamp.as_nanos() as _);
+					buffer_mut.set_pts(Some(pts));
+
+					let mut flags = buffer_mut.flags();
+					flags.remove(gst::BufferFlags::DELTA_UNIT);
+					buffer_mut.set_flags(flags);
+
+					gst::info!(CAT, "pushing sample: {:?}", buffer);
+
+					if let Err(err) = srcpad.push(buffer) {
+						gst::warning!(CAT, "Failed to push sample: {:?}", err);
+					}
+				}
+			});
+		}
 
 		// We downloaded the catalog and created all the pads.
 		self.obj().no_more_pads();

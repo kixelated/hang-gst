@@ -7,46 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.7](https://github.com/kixelated/moq-rs/compare/moq-gst-v0.1.6...moq-gst-v0.1.7) - 2025-01-30
+## [0.2.2] - 2025-08-12
 
 ### Other
 
-- update Cargo.lock dependencies
+- Support an array of authorized paths
+- Revamp the Producer/Consumer API for moq_lite
 
-## [0.1.6](https://github.com/kixelated/moq-rs/compare/moq-gst-v0.1.5...moq-gst-v0.1.6) - 2025-01-16
-
-### Other
-
-- update Cargo.lock dependencies
-
-## [0.1.5](https://github.com/kixelated/moq-rs/compare/moq-gst-v0.1.4...moq-gst-v0.1.5) - 2025-01-16
+## [0.2.1] - 2025-07-22
 
 ### Other
 
-- Support fetching fingerprint via native clients. ([#286](https://github.com/kixelated/moq-rs/pull/286))
-- Initial WASM contribute ([#283](https://github.com/kixelated/moq-rs/pull/283))
+- Create a type-safe Path wrapper for Javascript
+- Add an ANNOUNCE_INIT message
 
-## [0.1.4](https://github.com/kixelated/moq-rs/compare/moq-gst-v0.1.3...moq-gst-v0.1.4) - 2025-01-13
-
-### Other
-
-- update Cargo.lock dependencies
-
-## [0.1.3](https://github.com/kixelated/moq-rs/compare/moq-gst-v0.1.2...moq-gst-v0.1.3) - 2025-01-13
+## [0.1.2] - 2025-06-20
 
 ### Other
 
-- updated the following local packages: moq-native
+- updated the following local packages: hang
 
-## [0.1.2](https://github.com/kixelated/moq-rs/compare/moq-gst-v0.1.1...moq-gst-v0.1.2) - 2024-12-04
-
-### Other
-
-- updated the following local packages: moq-karp
-
-## [0.1.1](https://github.com/kixelated/moq-gst/compare/v0.1.0...v0.1.1) - 2024-11-09
+## [0.1.1] - 2025-06-03
 
 ### Other
 
-- Initial audio support ([#10](https://github.com/kixelated/moq-gst/pull/10))
-- Fix the plugin. ([#9](https://github.com/kixelated/moq-gst/pull/9))
+- Add support for authentication tokens ([#399](https://github.com/kixelated/moq/pull/399))
+- Add location tracks, fix some bugs, switch to nix ([#401](https://github.com/kixelated/moq/pull/401))
+- Move config to a separate field to match the specification. ([#387](https://github.com/kixelated/moq/pull/387))
+
+## [0.1.0](https://github.com/kixelated/moq/releases/tag/hang-gst-v0.1.0) - 2025-05-21
+
+### Other
+
+- Split into Rust/Javascript halves and rebrand as moq-lite/hang ([#376](https://github.com/kixelated/moq/pull/376))

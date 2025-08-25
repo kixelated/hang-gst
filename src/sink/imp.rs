@@ -4,9 +4,8 @@ use gst::prelude::*;
 use gst::subclass::prelude::*;
 use gst_base::subclass::prelude::*;
 
-use moq_karp::moq_transfork;
+use hang::moq_lite;
 
-use moq_native::{quic, tls};
 use once_cell::sync::Lazy;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -23,24 +22,25 @@ pub static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
 #[derive(Default, Clone)]
 struct Settings {
 	pub url: Option<String>,
+	pub broadcast: Option<String>,
 	pub tls_disable_verify: bool,
 }
 
 #[derive(Default)]
 struct State {
-	pub media: Option<moq_karp::cmaf::Import>,
+	pub media: Option<hang::cmaf::Import>,
 }
 
 #[derive(Default)]
-pub struct MoqSink {
+pub struct HangSink {
 	settings: Mutex<Settings>,
 	state: Arc<Mutex<State>>,
 }
 
 #[glib::object_subclass]
-impl ObjectSubclass for MoqSink {
-	const NAME: &'static str = "MoqSink";
-	type Type = super::MoqSink;
+impl ObjectSubclass for HangSink {
+	const NAME: &'static str = "HangSink";
+	type Type = super::HangSink;
 	type ParentType = gst_base::BaseSink;
 
 	fn new() -> Self {
@@ -48,13 +48,17 @@ impl ObjectSubclass for MoqSink {
 	}
 }
 
-impl ObjectImpl for MoqSink {
+impl ObjectImpl for HangSink {
 	fn properties() -> &'static [glib::ParamSpec] {
 		static PROPERTIES: Lazy<Vec<glib::ParamSpec>> = Lazy::new(|| {
 			vec![
 				glib::ParamSpecString::builder("url")
 					.nick("Source URL")
 					.blurb("Connect to the given URL")
+					.build(),
+				glib::ParamSpecString::builder("broadcast")
+					.nick("Broadcast")
+					.blurb("The name of the broadcast to publish")
 					.build(),
 				glib::ParamSpecBoolean::builder("tls-disable-verify")
 					.nick("TLS disable verify")
@@ -70,7 +74,8 @@ impl ObjectImpl for MoqSink {
 		let mut settings = self.settings.lock().unwrap();
 
 		match pspec.name() {
-			"url" => settings.url = Some(value.get().unwrap()),
+			"url" => settings.url = value.get().unwrap(),
+			"broadcast" => settings.broadcast = value.get().unwrap(),
 			"tls-disable-verify" => settings.tls_disable_verify = value.get().unwrap(),
 			_ => unimplemented!(),
 		}
@@ -81,15 +86,16 @@ impl ObjectImpl for MoqSink {
 
 		match pspec.name() {
 			"url" => settings.url.to_value(),
+			"broadcast" => settings.broadcast.to_value(),
 			"tls-disable-verify" => settings.tls_disable_verify.to_value(),
 			_ => unimplemented!(),
 		}
 	}
 }
 
-impl GstObjectImpl for MoqSink {}
+impl GstObjectImpl for HangSink {}
 
-impl ElementImpl for MoqSink {
+impl ElementImpl for HangSink {
 	fn metadata() -> Option<&'static gst::subclass::ElementMetadata> {
 		static ELEMENT_METADATA: Lazy<gst::subclass::ElementMetadata> = Lazy::new(|| {
 			gst::subclass::ElementMetadata::new(
@@ -118,7 +124,7 @@ impl ElementImpl for MoqSink {
 	}
 }
 
-impl BaseSinkImpl for MoqSink {
+impl BaseSinkImpl for HangSink {
 	fn start(&self) -> Result<(), gst::ErrorMessage> {
 		let _guard = RUNTIME.enter();
 		self.setup()
@@ -144,33 +150,37 @@ impl BaseSinkImpl for MoqSink {
 	}
 }
 
-impl MoqSink {
+impl HangSink {
 	fn setup(&self) -> anyhow::Result<()> {
 		let settings = self.settings.lock().unwrap();
-		let url = settings.url.clone().context("missing url")?;
-		let url = Url::parse(&url).context("invalid URL")?;
+
+		let url = settings.url.as_ref().expect("url is required");
+		let url = Url::parse(url).context("invalid URL")?;
 
 		// TODO support TLS certs and other options
-		let config = quic::Args {
-			bind: "[::]:0".parse().unwrap(),
-			tls: tls::Args {
-				disable_verify: settings.tls_disable_verify,
+		let client = moq_native::ClientConfig {
+			tls: moq_native::ClientTls {
+				disable_verify: Some(settings.tls_disable_verify),
 				..Default::default()
 			},
+			..Default::default()
 		}
-		.load()?;
-		let client = quic::Endpoint::new(config)?.client;
+		.init()?;
 
 		RUNTIME.block_on(async move {
 			let session = client.connect(url.clone()).await.expect("failed to connect");
-			let session = moq_transfork::Session::connect(session)
+
+			let origin = moq_lite::Origin::produce();
+			let broadcast = moq_lite::Broadcast::produce();
+
+			let name = settings.broadcast.as_ref().expect("broadcast is required");
+			origin.producer.publish_broadcast(name, broadcast.consumer);
+
+			let _session = moq_lite::Session::connect(session, origin.consumer, None)
 				.await
 				.expect("failed to connect");
 
-			let path = url.path().strip_prefix('/').unwrap().to_string();
-
-			let broadcast = moq_karp::BroadcastProducer::new(session, path).unwrap();
-			let media = moq_karp::cmaf::Import::new(broadcast);
+			let media = hang::cmaf::Import::new(broadcast.producer);
 
 			let mut state = self.state.lock().unwrap();
 			state.media = Some(media);

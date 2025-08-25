@@ -1,8 +1,10 @@
 <p align="center">
-	<img height="128px" src="https://github.com/kixelated/moq-rs/blob/main/.github/logo.svg" alt="Media over QUIC">
+       <img height="128px" src="https://github.com/kixelated/moq/blob/main/.github/logo.svg" alt="Media over QUIC">
 </p>
 
-A gstreamer plugin utilizing [moq-rs](https://github.com/kixelated/moq-rs).
+A GStreamer plugin for [MoQ (Media over QUIC)](https://github.com/kixelated/moq) that enables publishing and consuming media streams using the MoQ protocol.
+
+This plugin was originally part of the main MoQ repository but has been separated to avoid requiring GStreamer as a build dependency.
 
 # Usage
 ## Requirements
@@ -21,19 +23,16 @@ just setup
 ## Development
 First make sure you have a local moq-relay server running:
 ```sh
-# In github.com/kixelated/moq-rs
 just relay
 ```
 
 Now you can publish and subscribe to a video:
 ```sh
-# In github.com/kixelated/moq-gst
-
 # Publish to a localhost moq-relay server
-just pub
+just pub-gst bbb
 
 # Subscribe from a localhost moq-relay server
-just sub
+just sub bbb
 ```
 
 # License
