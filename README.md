@@ -1,10 +1,11 @@
+> [!WARNING]
+> **This repository is deprecated.** Development has moved to [moq-dev/moq](https://github.com/moq-dev/moq) under [`rs/moq-gst`](https://github.com/moq-dev/moq/tree/main/rs/moq-gst). Please use that repository instead.
+
 <p align="center">
        <img height="128px" src="https://github.com/kixelated/moq/blob/main/.github/logo.svg" alt="Media over QUIC">
 </p>
 
-A GStreamer plugin for [MoQ (Media over QUIC)](https://github.com/kixelated/moq) that enables publishing and consuming media streams using the MoQ protocol.
-
-This plugin was originally part of the main MoQ repository but has been separated to avoid requiring GStreamer as a build dependency.
+A GStreamer plugin for [MoQ (Media over QUIC)](https://github.com/moq-dev/moq) that enables publishing and consuming media streams using the MoQ protocol.
 
 # Usage
 ## Requirements
